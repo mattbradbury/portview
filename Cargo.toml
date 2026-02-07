@@ -13,7 +13,6 @@ clap = { version = "4", features = ["derive"] }
 tabled = "0.17"
 colored = "2"
 libc = "0.2"
-users = "0.11"
 
 [profile.release]
 opt-level = "z"

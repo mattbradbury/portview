@@ -2,7 +2,7 @@ use clap::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tabled::settings::Style;
@@ -331,7 +331,7 @@ fn parse_proc_status(pid: u32) -> (u32, u64) {
         if let Some(rest) = line.strip_prefix("Uid:") {
             uid = rest.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.trim().split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+            let kb: u64 = rest.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
             rss_bytes = kb * 1024;
         }
     }
@@ -339,9 +339,24 @@ fn parse_proc_status(pid: u32) -> (u32, u64) {
 }
 
 fn get_username(uid: u32) -> String {
-    users::get_user_by_uid(uid)
-        .map(|u| u.name().to_string_lossy().to_string())
-        .unwrap_or_else(|| uid.to_string())
+    let mut buf = vec![0u8; 1024];
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let ret = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut pwd,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        )
+    };
+    if ret == 0 && !result.is_null() {
+        let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
+        name.to_string_lossy().into_owned()
+    } else {
+        uid.to_string()
+    }
 }
 
 fn get_boot_time() -> u64 {
@@ -529,6 +544,19 @@ fn format_addr(addr: &IpAddr) -> String {
 
 // ── Display functions ────────────────────────────────────────────────
 
+fn to_table_row(info: &PortInfo) -> TableRow {
+    TableRow {
+        port: info.port.to_string(),
+        proto: info.protocol.clone(),
+        pid: info.pid.to_string(),
+        user: info.user.clone(),
+        process: info.process_name.clone(),
+        uptime: format_uptime(info.start_time),
+        memory: format_bytes(info.memory_bytes),
+        command: info.command.clone(),
+    }
+}
+
 fn display_table(infos: &[PortInfo], use_color: bool) {
     if infos.is_empty() {
         if use_color {
@@ -539,19 +567,7 @@ fn display_table(infos: &[PortInfo], use_color: bool) {
         return;
     }
 
-    let rows: Vec<TableRow> = infos
-        .iter()
-        .map(|info| TableRow {
-            port: info.port.to_string(),
-            proto: info.protocol.clone(),
-            pid: info.pid.to_string(),
-            user: info.user.clone(),
-            process: info.process_name.clone(),
-            uptime: format_uptime(info.start_time),
-            memory: format_bytes(info.memory_bytes),
-            command: info.command.clone(),
-        })
-        .collect();
+    let rows: Vec<TableRow> = infos.iter().map(to_table_row).collect();
 
     let mut table = Table::new(&rows);
     table.with(Style::rounded());
@@ -560,6 +576,7 @@ fn display_table(infos: &[PortInfo], use_color: bool) {
 
 fn display_detail(info: &PortInfo, use_color: bool) {
     let bind_str = format!("{}:{}", format_addr(&info.local_addr), info.port);
+    let uptime = format_uptime(info.start_time);
 
     if use_color {
         println!(
@@ -571,31 +588,30 @@ fn display_detail(info: &PortInfo, use_color: bool) {
             info.process_name.bold().green(),
             info.pid.to_string().yellow(),
         );
-        println!("  {}  {}", "Bind:".dimmed(), bind_str);
-        println!("  {}  {}", "Command:".dimmed(), info.command);
-        println!("  {}  {}", "User:".dimmed(), info.user);
-        println!(
-            "  {}  {}",
-            "Started:".dimmed(),
-            format_uptime(info.start_time).cyan()
-        );
-        println!("  {}  {}", "Memory:".dimmed(), format_bytes(info.memory_bytes));
-        println!("  {}  {:.1}s", "CPU time:".dimmed(), info.cpu_seconds);
-        println!("  {}  {}", "Children:".dimmed(), info.children);
-        println!("  {}  {}", "State:".dimmed(), info.state);
     } else {
         println!(
             "\nPort {} ({}) — {} (PID {})",
             info.port, info.protocol, info.process_name, info.pid,
         );
-        println!("  Bind:     {}", bind_str);
-        println!("  Command:  {}", info.command);
-        println!("  User:     {}", info.user);
-        println!("  Started:  {} ago", format_uptime(info.start_time));
-        println!("  Memory:   {}", format_bytes(info.memory_bytes));
-        println!("  CPU time: {:.1}s", info.cpu_seconds);
-        println!("  Children: {}", info.children);
-        println!("  State:    {}", info.state);
+    }
+
+    let rows: &[(&str, String)] = &[
+        ("Bind:", bind_str),
+        ("Command:", info.command.clone()),
+        ("User:", info.user.clone()),
+        ("Started:", if use_color { uptime.clone() } else { format!("{} ago", uptime) }),
+        ("Memory:", format_bytes(info.memory_bytes)),
+        ("CPU time:", format!("{:.1}s", info.cpu_seconds)),
+        ("Children:", info.children.to_string()),
+        ("State:", info.state.to_string()),
+    ];
+
+    for (label, value) in rows {
+        if use_color {
+            println!("  {}  {}", label.dimmed(), value);
+        } else {
+            println!("  {:<9} {}", label, value);
+        }
     }
 }
 
@@ -815,19 +831,7 @@ fn main() {
                         );
                     }
 
-                    let rows: Vec<TableRow> = matches
-                        .iter()
-                        .map(|info| TableRow {
-                            port: info.port.to_string(),
-                            proto: info.protocol.clone(),
-                            pid: info.pid.to_string(),
-                            user: info.user.clone(),
-                            process: info.process_name.clone(),
-                            uptime: format_uptime(info.start_time),
-                            memory: format_bytes(info.memory_bytes),
-                            command: info.command.clone(),
-                        })
-                        .collect();
+                    let rows: Vec<TableRow> = matches.iter().map(|i| to_table_row(i)).collect();
 
                     let mut table = Table::new(&rows);
                     table.with(Style::rounded());
@@ -839,9 +843,9 @@ fn main() {
 }
 
 fn atty_stdout() -> bool {
-    unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
+    io::stdout().is_terminal()
 }
 
 fn atty_stdin() -> bool {
-    unsafe { libc::isatty(libc::STDIN_FILENO) != 0 }
+    io::stdin().is_terminal()
 }
