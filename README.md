@@ -4,7 +4,7 @@ See what's on your ports, then act on it.
 
 A diagnostic-first port viewer for Linux. No more `lsof -i :3000 | grep LISTEN` incantations. One command shows you what's listening, who owns it, how long it's been running, and offers to kill it if you want.
 
-816 KB single binary. Zero runtime dependencies.
+~930 KB single binary. Zero runtime dependencies.
 
 <p align="center">
   <img src="demo.gif" alt="portview --watch demo" width="100%" loop=infinite>
@@ -107,6 +107,22 @@ portview --json | jq '.[] | select(.process == "node")'
 ```bash
 portview --all
 ```
+
+### Custom colors
+
+Table columns are colored by default. Customize with the `PORTVIEW_COLORS` environment variable:
+
+```bash
+PORTVIEW_COLORS="port=red,pid=magenta,command=bright_cyan" portview
+```
+
+Available columns: `port`, `proto`, `pid`, `user`, `process`, `uptime`, `mem`, `command`
+
+Available colors: `red`, `green`, `blue`, `cyan`, `yellow`, `magenta`, `white`, `bold`, `dimmed`, `bright_red`, `bright_green`, `bright_blue`, `bright_cyan`, `bright_yellow`, `bright_magenta`, `bright_white`, `none`
+
+Defaults: `port=cyan, proto=dimmed, pid=yellow, user=green, process=bold, uptime=dimmed, mem=dimmed, command=white`
+
+Use `--no-color` to disable all colors.
 
 ## What it shows
 

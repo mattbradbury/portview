@@ -548,22 +548,127 @@ fn format_addr(addr: &IpAddr) -> String {
     }
 }
 
-// ── Display functions ────────────────────────────────────────────────
+// ── Color config ─────────────────────────────────────────────────────
 
-fn to_table_row(info: &PortInfo) -> TableRow {
-    TableRow {
-        port: info.port.to_string(),
-        proto: info.protocol.clone(),
-        pid: info.pid.to_string(),
-        user: info.user.clone(),
-        process: info.process_name.clone(),
-        uptime: format_uptime(info.start_time),
-        memory: format_bytes(info.memory_bytes),
-        command: info.command.clone(),
+struct ColorConfig {
+    port: String,
+    proto: String,
+    pid: String,
+    user: String,
+    process: String,
+    uptime: String,
+    mem: String,
+    command: String,
+}
+
+impl Default for ColorConfig {
+    fn default() -> Self {
+        Self {
+            port: "cyan".into(),
+            proto: "dimmed".into(),
+            pid: "yellow".into(),
+            user: "green".into(),
+            process: "bold".into(),
+            uptime: "dimmed".into(),
+            mem: "dimmed".into(),
+            command: "white".into(),
+        }
     }
 }
 
-fn display_table(infos: &[PortInfo], use_color: bool) {
+impl ColorConfig {
+    fn from_env() -> Self {
+        let mut config = Self::default();
+        let val = match std::env::var("PORTVIEW_COLORS") {
+            Ok(v) => v,
+            Err(_) => return config,
+        };
+        for pair in val.split(',') {
+            let pair = pair.trim();
+            if let Some((key, value)) = pair.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                if !is_valid_color(value) {
+                    continue;
+                }
+                match key {
+                    "port" => config.port = value.into(),
+                    "proto" => config.proto = value.into(),
+                    "pid" => config.pid = value.into(),
+                    "user" => config.user = value.into(),
+                    "process" => config.process = value.into(),
+                    "uptime" => config.uptime = value.into(),
+                    "mem" => config.mem = value.into(),
+                    "command" => config.command = value.into(),
+                    _ => {}
+                }
+            }
+        }
+        config
+    }
+}
+
+fn is_valid_color(s: &str) -> bool {
+    matches!(
+        s,
+        "red"
+            | "green"
+            | "blue"
+            | "cyan"
+            | "yellow"
+            | "magenta"
+            | "white"
+            | "bold"
+            | "dimmed"
+            | "bright_red"
+            | "bright_green"
+            | "bright_blue"
+            | "bright_cyan"
+            | "bright_yellow"
+            | "bright_magenta"
+            | "bright_white"
+            | "none"
+    )
+}
+
+fn apply_color(s: &str, color: &str) -> String {
+    match color {
+        "red" => s.red().to_string(),
+        "green" => s.green().to_string(),
+        "blue" => s.blue().to_string(),
+        "cyan" => s.cyan().to_string(),
+        "yellow" => s.yellow().to_string(),
+        "magenta" => s.magenta().to_string(),
+        "white" => s.white().to_string(),
+        "bold" => s.bold().to_string(),
+        "dimmed" => s.dimmed().to_string(),
+        "bright_red" => s.bright_red().to_string(),
+        "bright_green" => s.bright_green().to_string(),
+        "bright_blue" => s.bright_blue().to_string(),
+        "bright_cyan" => s.bright_cyan().to_string(),
+        "bright_yellow" => s.bright_yellow().to_string(),
+        "bright_magenta" => s.bright_magenta().to_string(),
+        "bright_white" => s.bright_white().to_string(),
+        _ => s.to_string(),
+    }
+}
+
+// ── Display functions ────────────────────────────────────────────────
+
+fn to_table_row(info: &PortInfo, colors: &ColorConfig) -> TableRow {
+    TableRow {
+        port: apply_color(&info.port.to_string(), &colors.port),
+        proto: apply_color(&info.protocol, &colors.proto),
+        pid: apply_color(&info.pid.to_string(), &colors.pid),
+        user: apply_color(&info.user, &colors.user),
+        process: apply_color(&info.process_name, &colors.process),
+        uptime: apply_color(&format_uptime(info.start_time), &colors.uptime),
+        memory: apply_color(&format_bytes(info.memory_bytes), &colors.mem),
+        command: apply_color(&info.command, &colors.command),
+    }
+}
+
+fn display_table(infos: &[PortInfo], use_color: bool, colors: &ColorConfig) {
     if infos.is_empty() {
         if use_color {
             println!("{}", "No listening ports found.".dimmed());
@@ -573,7 +678,7 @@ fn display_table(infos: &[PortInfo], use_color: bool) {
         return;
     }
 
-    let rows: Vec<TableRow> = infos.iter().map(to_table_row).collect();
+    let rows: Vec<TableRow> = infos.iter().map(|i| to_table_row(i, colors)).collect();
 
     let mut table = Table::new(&rows);
     table.with(Style::rounded());
@@ -814,6 +919,8 @@ fn main() {
         colored::control::set_override(false);
     }
 
+    let colors = ColorConfig::from_env();
+
     // --watch + --kill is not allowed
     if cli.watch && cli.kill.is_some() {
         eprintln!("error: --watch and --kill cannot be used together");
@@ -847,7 +954,7 @@ fn main() {
 
         while RUNNING.load(Ordering::SeqCst) {
             clear_screen();
-            run_display(&cli, use_color);
+            run_display(&cli, use_color, &colors);
             print_watch_footer(use_color);
 
             // Sleep in small increments so we respond to Ctrl+C quickly
@@ -862,7 +969,7 @@ fn main() {
         show_cursor();
         leave_alt_screen();
     } else {
-        run_display(&cli, use_color);
+        run_display(&cli, use_color, &colors);
     }
 }
 
@@ -871,7 +978,7 @@ fn compute_max_cmd_len() -> usize {
     cols.saturating_sub(83).max(20)
 }
 
-fn run_display(cli: &Cli, use_color: bool) {
+fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
     let max_cmd_len = compute_max_cmd_len();
     match cli.target.as_deref() {
         None | Some("scan") => {
@@ -891,7 +998,7 @@ fn run_display(cli: &Cli, use_color: bool) {
                         .bold()
                     );
                 }
-                display_table(&infos, use_color);
+                display_table(&infos, use_color, colors);
                 if use_color && !infos.is_empty() && !cli.watch {
                     println!(
                         "{}",
@@ -964,7 +1071,7 @@ fn run_display(cli: &Cli, use_color: bool) {
                         );
                     }
 
-                    let rows: Vec<TableRow> = matches.iter().map(|i| to_table_row(i)).collect();
+                    let rows: Vec<TableRow> = matches.iter().map(|i| to_table_row(i, colors)).collect();
 
                     let mut table = Table::new(&rows);
                     table.with(Style::rounded());
