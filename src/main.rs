@@ -726,6 +726,16 @@ fn display_json(infos: &[PortInfo]) {
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
+fn enter_alt_screen() {
+    print!("\x1B[?1049h");
+    let _ = io::stdout().flush();
+}
+
+fn leave_alt_screen() {
+    print!("\x1B[?1049l");
+    let _ = io::stdout().flush();
+}
+
 fn clear_screen() {
     print!("\x1B[2J\x1B[H");
     let _ = io::stdout().flush();
@@ -812,10 +822,11 @@ fn main() {
     }
 
     if cli.watch {
-        // Register SIGINT handler for clean cursor restore
+        // Register SIGINT handler for clean exit
         unsafe {
             libc::signal(libc::SIGINT, handle_sigint as libc::sighandler_t);
         }
+        enter_alt_screen();
         hide_cursor();
 
         while RUNNING.load(Ordering::SeqCst) {
@@ -833,6 +844,7 @@ fn main() {
         }
 
         show_cursor();
+        leave_alt_screen();
     } else {
         run_display(&cli, use_color);
     }
