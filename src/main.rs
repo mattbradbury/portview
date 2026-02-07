@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tabled::settings::Style;
 use tabled::{Table, Tabled};
@@ -40,6 +41,10 @@ struct Cli {
     /// Don't use colors
     #[arg(long)]
     no_color: bool,
+
+    /// Live-refresh the display every second
+    #[arg(short, long)]
+    watch: bool,
 }
 
 // ── Data types ───────────────────────────────────────────────────────
@@ -717,6 +722,62 @@ fn display_json(infos: &[PortInfo]) {
     println!("]");
 }
 
+// ── Watch-mode helpers ────────────────────────────────────────────────
+
+static RUNNING: AtomicBool = AtomicBool::new(true);
+
+fn clear_screen() {
+    print!("\x1B[2J\x1B[H");
+    let _ = io::stdout().flush();
+}
+
+fn hide_cursor() {
+    print!("\x1B[?25l");
+    let _ = io::stdout().flush();
+}
+
+fn show_cursor() {
+    print!("\x1B[?25h");
+    let _ = io::stdout().flush();
+}
+
+extern "C" fn handle_sigint(_sig: libc::c_int) {
+    RUNNING.store(false, Ordering::SeqCst);
+}
+
+fn print_watch_footer(use_color: bool) {
+    let now = chrono_free_time();
+    let line = format!("Watching every 1s · Updated {} · Ctrl+C to quit", now);
+    if use_color {
+        println!("\n{}", line.dimmed());
+    } else {
+        println!("\n{}", line);
+    }
+}
+
+fn chrono_free_time() -> String {
+    // Get wall-clock HH:MM:SS without pulling in chrono
+    let secs_since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Read local timezone offset from libc
+    let offset_secs: i64 = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let time = secs_since_epoch as libc::time_t;
+        libc::localtime_r(&time, &mut tm);
+        tm.tm_gmtoff
+    };
+
+    let local_secs = (secs_since_epoch as i64 + offset_secs) as u64;
+    let day_secs = local_secs % 86400;
+    let h = day_secs / 3600;
+    let m = (day_secs % 3600) / 60;
+    let s = day_secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 fn main() {
@@ -727,7 +788,13 @@ fn main() {
         colored::control::set_override(false);
     }
 
-    // --kill mode
+    // --watch + --kill is not allowed
+    if cli.watch && cli.kill.is_some() {
+        eprintln!("error: --watch and --kill cannot be used together");
+        std::process::exit(2);
+    }
+
+    // --kill mode (not compatible with watch)
     if let Some(port) = cli.kill {
         let infos = get_port_infos(false);
         let matches: Vec<&PortInfo> = infos.iter().filter(|i| i.port == port).collect();
@@ -744,7 +811,34 @@ fn main() {
         return;
     }
 
-    // Determine mode from positional arg
+    if cli.watch {
+        // Register SIGINT handler for clean cursor restore
+        unsafe {
+            libc::signal(libc::SIGINT, handle_sigint as libc::sighandler_t);
+        }
+        hide_cursor();
+
+        while RUNNING.load(Ordering::SeqCst) {
+            clear_screen();
+            run_display(&cli, use_color);
+            print_watch_footer(use_color);
+
+            // Sleep in small increments so we respond to Ctrl+C quickly
+            for _ in 0..20 {
+                if !RUNNING.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        show_cursor();
+    } else {
+        run_display(&cli, use_color);
+    }
+}
+
+fn run_display(cli: &Cli, use_color: bool) {
     match cli.target.as_deref() {
         None | Some("scan") => {
             // Default: show table of listening ports
@@ -764,7 +858,7 @@ fn main() {
                     );
                 }
                 display_table(&infos, use_color);
-                if use_color && !infos.is_empty() {
+                if use_color && !infos.is_empty() && !cli.watch {
                     println!(
                         "{}",
                         "  Inspect a port: portview <port>".dimmed()
@@ -788,15 +882,18 @@ fn main() {
                     } else {
                         println!("\n  Nothing on port {}", port);
                     }
-                    std::process::exit(0);
+                    if !cli.watch {
+                        std::process::exit(0);
+                    }
+                    return;
                 }
 
                 for info in &matches {
                     display_detail(info, use_color);
                 }
 
-                // Offer to kill interactively (only for single match, only in terminal)
-                if matches.len() == 1 && atty_stdout() && atty_stdin() {
+                // Offer to kill interactively (only when NOT watching)
+                if !cli.watch && matches.len() == 1 && atty_stdout() && atty_stdin() {
                     prompt_kill(matches[0].pid, cli.force);
                 }
             } else {
@@ -821,7 +918,9 @@ fn main() {
                     } else {
                         println!("\n  No ports found for '{}'", target);
                     }
-                    std::process::exit(1);
+                    if !cli.watch {
+                        std::process::exit(1);
+                    }
                 } else {
                     if use_color {
                         println!(
