@@ -6,7 +6,8 @@ use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tabled::settings::Style;
+use tabled::settings::object::Columns;
+use tabled::settings::{Modify, Style, Width};
 use tabled::{Table, Tabled};
 
 // ── CLI ──────────────────────────────────────────────────────────────
@@ -46,6 +47,9 @@ struct Cli {
     #[arg(short, long)]
     watch: bool,
 
+    /// Don't truncate the command column (use full terminal width)
+    #[arg(long)]
+    wide: bool,
 }
 
 // ── Data types ───────────────────────────────────────────────────────
@@ -304,7 +308,7 @@ fn get_process_name(pid: u32) -> String {
         .to_string()
 }
 
-fn get_process_cmdline(pid: u32, max_len: usize) -> String {
+fn get_process_cmdline(pid: u32) -> String {
     let raw = fs::read(format!("/proc/{}/cmdline", pid)).unwrap_or_default();
     let cmd: String = raw
         .split(|&b| b == 0)
@@ -316,16 +320,19 @@ fn get_process_cmdline(pid: u32, max_len: usize) -> String {
     if cmd.is_empty() {
         format!("[{}]", get_process_name(pid))
     } else {
-        // Truncate for display (safe for multi-byte UTF-8)
-        if cmd.len() > max_len {
-            let mut end = max_len - 1;
-            while end > 0 && !cmd.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}…", &cmd[..end])
-        } else {
-            cmd
+        cmd
+    }
+}
+
+fn truncate_cmd(cmd: &str, max_len: usize) -> String {
+    if cmd.len() > max_len {
+        let mut end = max_len.saturating_sub(1);
+        while end > 0 && !cmd.is_char_boundary(end) {
+            end -= 1;
         }
+        format!("{}…", &cmd[..end])
+    } else {
+        cmd.to_string()
     }
 }
 
@@ -422,7 +429,7 @@ fn count_children(pid: u32) -> u32 {
 
 // ── Assemble port info ───────────────────────────────────────────────
 
-fn get_port_infos(filter_listening: bool, max_cmd_len: usize) -> Vec<PortInfo> {
+fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
     let sockets = get_all_sockets();
     let inode_map = build_inode_to_pid_map();
     let boot_time = get_boot_time();
@@ -455,7 +462,7 @@ fn get_port_infos(filter_listening: bool, max_cmd_len: usize) -> Vec<PortInfo> {
             protocol: sock.protocol.strip_suffix('6').unwrap_or(&sock.protocol).to_string(),
             pid,
             process_name: get_process_name(pid),
-            command: get_process_cmdline(pid, max_cmd_len),
+            command: get_process_cmdline(pid),
             user: get_username(uid),
             state: sock.state,
             memory_bytes: rss_bytes,
@@ -668,7 +675,7 @@ fn to_table_row(info: &PortInfo, colors: &ColorConfig) -> TableRow {
     }
 }
 
-fn display_table(infos: &[PortInfo], use_color: bool, colors: &ColorConfig) {
+fn display_table(infos: &[PortInfo], use_color: bool, colors: &ColorConfig, wide: bool, cmd_width: usize) {
     if infos.is_empty() {
         if use_color {
             println!("{}", "No listening ports found.".dimmed());
@@ -682,6 +689,9 @@ fn display_table(infos: &[PortInfo], use_color: bool, colors: &ColorConfig) {
 
     let mut table = Table::new(&rows);
     table.with(Style::rounded());
+    if wide {
+        table.with(Modify::new(Columns::last()).with(Width::wrap(cmd_width)));
+    }
     println!("{}", table);
 }
 
@@ -847,6 +857,16 @@ fn clear_screen() {
     let _ = io::stdout().flush();
 }
 
+fn cursor_home() {
+    print!("\x1B[H");
+    let _ = io::stdout().flush();
+}
+
+fn erase_below() {
+    print!("\x1B[J");
+    let _ = io::stdout().flush();
+}
+
 fn hide_cursor() {
     print!("\x1B[?25l");
     let _ = io::stdout().flush();
@@ -929,7 +949,7 @@ fn main() {
 
     // --kill mode (not compatible with watch)
     if let Some(port) = cli.kill {
-        let infos = get_port_infos(false, compute_max_cmd_len());
+        let infos = get_port_infos(false);
         let matches: Vec<&PortInfo> = infos.iter().filter(|i| i.port == port).collect();
 
         if matches.is_empty() {
@@ -952,10 +972,13 @@ fn main() {
         enter_alt_screen();
         hide_cursor();
 
+        // Clear once on first frame, then overwrite in-place
+        clear_screen();
         while RUNNING.load(Ordering::SeqCst) {
-            clear_screen();
+            cursor_home();
             run_display(&cli, use_color, &colors);
             print_watch_footer(use_color);
+            erase_below();
 
             // Sleep in small increments so we respond to Ctrl+C quickly
             for _ in 0..20 {
@@ -973,20 +996,46 @@ fn main() {
     }
 }
 
-fn compute_max_cmd_len() -> usize {
+/// Compute available width for the command column based on actual data.
+/// Accounts for the real widths of all other columns + table borders/padding.
+fn compute_cmd_width(infos: &[PortInfo]) -> usize {
     let cols = get_terminal_width().unwrap_or(143) as usize;
-    cols.saturating_sub(83).max(20)
+
+    if infos.is_empty() {
+        return cols.saturating_sub(83).max(20);
+    }
+
+    // Measure the max content width of each non-command column (min = header width)
+    let port_w = infos.iter().map(|i| i.port.to_string().len()).max().unwrap_or(0).max(4);     // "PORT"
+    let proto_w = infos.iter().map(|i| i.protocol.len()).max().unwrap_or(0).max(5);             // "PROTO"
+    let pid_w = infos.iter().map(|i| i.pid.to_string().len()).max().unwrap_or(0).max(3);        // "PID"
+    let user_w = infos.iter().map(|i| i.user.len()).max().unwrap_or(0).max(4);                  // "USER"
+    let process_w = infos.iter().map(|i| i.process_name.len()).max().unwrap_or(0).max(7);       // "PROCESS"
+    let uptime_w = infos.iter().map(|i| format_uptime(i.start_time).len()).max().unwrap_or(0).max(6); // "UPTIME"
+    let mem_w = infos.iter().map(|i| format_bytes(i.memory_bytes).len()).max().unwrap_or(0).max(3);   // "MEM"
+
+    let data_width = port_w + proto_w + pid_w + user_w + process_w + uptime_w + mem_w;
+
+    // Rounded style: 9 vertical borders + 1 space padding on each side of each of 8 columns
+    let chrome = 9 + (8 * 2);
+
+    cols.saturating_sub(data_width + chrome).max(20)
 }
 
 fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
-    let max_cmd_len = compute_max_cmd_len();
     match cli.target.as_deref() {
         None | Some("scan") => {
             // Default: show table of listening ports
-            let infos = get_port_infos(!cli.all, max_cmd_len);
+            let mut infos = get_port_infos(!cli.all);
             if cli.json {
                 display_json(&infos);
             } else {
+                let cmd_width = compute_cmd_width(&infos);
+                if !cli.wide {
+                    for info in &mut infos {
+                        info.command = truncate_cmd(&info.command, cmd_width);
+                    }
+                }
                 if use_color {
                     println!(
                         "\n{}",
@@ -998,7 +1047,7 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                         .bold()
                     );
                 }
-                display_table(&infos, use_color, colors);
+                display_table(&infos, use_color, colors, cli.wide, cmd_width);
                 if use_color && !infos.is_empty() && !cli.watch {
                     println!(
                         "{}",
@@ -1010,7 +1059,7 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
         Some(target) => {
             // Try to parse as port number
             if let Ok(port) = target.parse::<u16>() {
-                let infos = get_port_infos(false, max_cmd_len);
+                let infos = get_port_infos(false);
                 let matches: Vec<&PortInfo> = infos.iter().filter(|i| i.port == port).collect();
 
                 if matches.is_empty() {
@@ -1039,7 +1088,13 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                 }
             } else {
                 // Search by process name
-                let infos = get_port_infos(!cli.all, max_cmd_len);
+                let mut infos = get_port_infos(!cli.all);
+                let cmd_width = compute_cmd_width(&infos);
+                if !cli.wide {
+                    for info in &mut infos {
+                        info.command = truncate_cmd(&info.command, cmd_width);
+                    }
+                }
                 let target_lower = target.to_lowercase();
                 let matches: Vec<&PortInfo> = infos
                     .iter()
@@ -1071,11 +1126,7 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                         );
                     }
 
-                    let rows: Vec<TableRow> = matches.iter().map(|i| to_table_row(i, colors)).collect();
-
-                    let mut table = Table::new(&rows);
-                    table.with(Style::rounded());
-                    println!("{}", table);
+                    display_table(&matches.iter().copied().cloned().collect::<Vec<_>>(), use_color, colors, cli.wide, cmd_width);
                 }
             }
         }
