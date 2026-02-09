@@ -9,7 +9,7 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState,
 };
@@ -23,8 +23,8 @@ use crate::macos::get_port_infos;
 use crate::windows::get_port_infos;
 
 use crate::{
-    chrono_free_time, do_kill, format_addr, format_bytes, format_uptime, truncate_cmd, PortInfo,
-    StyleConfig,
+    chrono_free_time, format_addr, format_bytes, format_uptime, kill_process, truncate_cmd,
+    PortInfo, StyleConfig,
 };
 
 // ── Sort types ───────────────────────────────────────────────────────
@@ -376,6 +376,36 @@ impl App {
     }
 }
 
+fn wrap_cmd(cmd: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![cmd.to_string()];
+    }
+    if cmd.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    while start < cmd.len() {
+        let mut end = (start + width).min(cmd.len());
+        while end > start && !cmd.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        if end == start {
+            end = cmd[start..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| start + i)
+                .unwrap_or(cmd.len());
+        }
+
+        lines.push(cmd[start..end].to_string());
+        start = end;
+    }
+    lines
+}
+
 // ── Rendering ────────────────────────────────────────────────────────
 
 fn build_title_line(app: &App) -> Line<'_> {
@@ -492,12 +522,8 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
 fn render_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let ports = app.sorted_ports();
     let wide = app.wide;
-    let cmd_width = if wide {
-        usize::MAX
-    } else {
-        let total = area.width as usize;
-        total.saturating_sub(77).max(10)
-    };
+    let total = area.width as usize;
+    let cmd_width = total.saturating_sub(77).max(10);
 
     let columns = [
         SortColumn::Port,
@@ -532,11 +558,14 @@ fn render_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let rows: Vec<Row> = ports
         .iter()
         .map(|info| {
-            let cmd = if wide {
-                info.command.clone()
+            let cmd_lines = if wide {
+                wrap_cmd(&info.command, cmd_width)
             } else {
-                truncate_cmd(&info.command, cmd_width)
+                vec![truncate_cmd(&info.command, cmd_width)]
             };
+            let row_height = cmd_lines.len().max(1) as u16;
+            let cmd_text = Text::from(cmd_lines.into_iter().map(Line::from).collect::<Vec<_>>());
+
             Row::new(vec![
                 Cell::from(info.port.to_string()).style(app.styles.port),
                 Cell::from(info.protocol.clone()).style(app.styles.proto),
@@ -547,8 +576,9 @@ fn render_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                     .style(app.styles.uptime),
                 Cell::from(Line::from(format_bytes(info.memory_bytes)).alignment(Alignment::Right))
                     .style(app.styles.mem),
-                Cell::from(cmd).style(app.styles.command),
+                Cell::from(cmd_text).style(app.styles.command),
             ])
+            .height(row_height)
         })
         .collect();
 
@@ -833,10 +863,14 @@ fn handle_popup_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('y') | KeyCode::Enter => {
             if let Some(popup) = app.popup.take() {
-                do_kill(popup.pid, popup.force);
-                let signal = if popup.force { "SIGKILL" } else { "SIGTERM" };
                 app.status_message = Some((
-                    format!("Sent {} to PID {}", signal, popup.pid),
+                    match kill_process(popup.pid, popup.force) {
+                        Ok(action) if action == "TerminateProcess" => {
+                            format!("Terminated PID {}", popup.pid)
+                        }
+                        Ok(action) => format!("Sent {} to PID {}", action, popup.pid),
+                        Err(err) => format!("Failed to kill PID {}: {}", popup.pid, err),
+                    },
                     Instant::now(),
                 ));
                 // Refresh immediately to reflect killed process
@@ -1124,5 +1158,21 @@ mod tests {
         assert_eq!(SortColumn::from_index(0), Some(SortColumn::Port));
         assert_eq!(SortColumn::from_index(7), Some(SortColumn::Command));
         assert_eq!(SortColumn::from_index(8), None);
+    }
+
+    #[test]
+    fn wrap_cmd_ascii_width() {
+        assert_eq!(
+            wrap_cmd("abcdefghijkl", 5),
+            vec!["abcde".to_string(), "fghij".to_string(), "kl".to_string()]
+        );
+    }
+
+    #[test]
+    fn wrap_cmd_utf8_boundary() {
+        assert_eq!(
+            wrap_cmd("café123", 5),
+            vec!["café".to_string(), "123".to_string()]
+        );
     }
 }

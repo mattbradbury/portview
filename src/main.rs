@@ -273,6 +273,39 @@ pub(crate) fn truncate_cmd(cmd: &str, max_len: usize) -> String {
     }
 }
 
+fn wrap_cmd(cmd: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![cmd.to_string()];
+    }
+    if cmd.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+
+    while start < cmd.len() {
+        let mut end = (start + width).min(cmd.len());
+        while end > start && !cmd.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        // Safety fallback for pathological widths around UTF-8 boundaries
+        if end == start {
+            end = cmd[start..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| start + i)
+                .unwrap_or(cmd.len());
+        }
+
+        lines.push(cmd[start..end].to_string());
+        start = end;
+    }
+
+    lines
+}
+
 pub(crate) fn format_addr(addr: &IpAddr) -> String {
     match addr {
         IpAddr::V4(v4) => {
@@ -560,16 +593,9 @@ fn display_table(
         .max()
         .unwrap_or(0)
         .max(3);
-    let actual_cmd_w = if wide {
-        infos
-            .iter()
-            .map(|i| i.command.len())
-            .max()
-            .unwrap_or(0)
-            .max(7)
-    } else {
-        cmd_width.max(7)
-    };
+    // Keep table width bounded to terminal width in both modes.
+    // In --wide mode we wrap command values into multiple row lines.
+    let actual_cmd_w = cmd_width.max(7);
 
     let widths = [
         port_w,
@@ -636,7 +662,7 @@ fn display_table(
     for info in infos {
         let uptime_str = format_uptime(info.start_time);
         let mem_str = format_bytes(info.memory_bytes);
-        let values = [
+        let base_values = [
             info.port.to_string(),
             info.protocol.clone(),
             info.pid.to_string(),
@@ -644,22 +670,35 @@ fn display_table(
             info.process_name.clone(),
             uptime_str,
             mem_str,
-            info.command.clone(),
         ];
 
-        let _ = write!(out, "│");
-        for (i, (&w, val)) in widths.iter().zip(values.iter()).enumerate() {
+        let cmd_lines = if wide {
+            wrap_cmd(&info.command, actual_cmd_w)
+        } else {
+            vec![info.command.clone()]
+        };
+
+        for (line_idx, cmd_line) in cmd_lines.iter().enumerate() {
+            let _ = write!(out, "│");
+
+            for (i, (&w, val)) in widths.iter().take(7).zip(base_values.iter()).enumerate() {
+                let _ = write!(out, " ");
+                let current = if line_idx == 0 { val.as_str() } else { "" };
+                // Right-align UPTIME (5) and MEM (6) columns
+                let padded = if i == 5 || i == 6 {
+                    format!("{:>width$}", current, width = w)
+                } else {
+                    format!("{:<width$}", current, width = w)
+                };
+                write_styled(&mut out, &padded, color_names[i], use_color);
+                let _ = write!(out, " │");
+            }
+
             let _ = write!(out, " ");
-            // Right-align UPTIME (5) and MEM (6) columns
-            let padded = if i == 5 || i == 6 {
-                format!("{:>width$}", val, width = w)
-            } else {
-                format!("{:<width$}", val, width = w)
-            };
-            write_styled(&mut out, &padded, color_names[i], use_color);
-            let _ = write!(out, " │");
+            let padded_cmd = format!("{:<width$}", cmd_line, width = actual_cmd_w);
+            write_styled(&mut out, &padded_cmd, color_names[7], use_color);
+            let _ = writeln!(out, " │");
         }
-        let _ = writeln!(out);
     }
 
     // Bottom border
@@ -748,21 +787,18 @@ fn prompt_kill(pid: u32, force: bool) -> bool {
 }
 
 #[cfg(unix)]
-pub(crate) fn do_kill(pid: u32, force: bool) {
-    let mut out = io::stderr();
-    // Guard against special PIDs and overflow on cast to i32
+pub(crate) fn kill_process(pid: u32, force: bool) -> io::Result<&'static str> {
     if pid == 0 {
-        write_styled(&mut out, "  ✗", "red", true);
-        let _ = writeln!(
-            out,
-            " Refusing to signal PID 0 (would target entire process group)"
-        );
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Refusing to signal PID 0 (would target entire process group)",
+        ));
     }
     if pid > i32::MAX as u32 {
-        write_styled(&mut out, "  ✗", "red", true);
-        let _ = writeln!(out, " PID {} exceeds safe range", pid);
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("PID {} exceeds safe range", pid),
+        ));
     }
 
     let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
@@ -771,51 +807,84 @@ pub(crate) fn do_kill(pid: u32, force: bool) {
     // Note: TOCTOU — the PID could have been recycled between reading /proc
     // and sending the signal. This is inherent to all kill-by-port tools.
     let result = unsafe { libc::kill(pid as i32, signal) };
-
     if result == 0 {
-        let mut out = io::stdout();
-        write_styled(&mut out, "  ✓", "green", true);
-        let _ = writeln!(out, " Sent {} to PID {}", signal_name, pid);
+        Ok(signal_name)
     } else {
-        let err = io::Error::last_os_error();
-        write_styled(&mut out, "  ✗", "red", true);
-        let _ = writeln!(out, " Failed to kill PID {}: {}", pid, err);
+        Err(io::Error::last_os_error())
     }
 }
 
 #[cfg(windows)]
-pub(crate) fn do_kill(pid: u32, _force: bool) {
+pub(crate) fn kill_process(pid: u32, _force: bool) -> io::Result<&'static str> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
-    let mut out = io::stderr();
     if pid == 0 {
-        write_styled(&mut out, "  ✗", "red", true);
-        let _ = writeln!(out, " Refusing to terminate PID 0");
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Refusing to terminate PID 0",
+        ));
     }
 
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
-            let err = io::Error::last_os_error();
-            write_styled(&mut out, "  ✗", "red", true);
-            let _ = writeln!(out, " Failed to open PID {}: {}", pid, err);
-            return;
+            return Err(io::Error::last_os_error());
         }
 
         // Windows has no graceful SIGTERM equivalent — always force-terminates
         let result = TerminateProcess(handle, 1);
+        let term_err = if result == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
         CloseHandle(handle);
 
-        if result != 0 {
+        if let Some(err) = term_err {
+            Err(err)
+        } else {
+            Ok("TerminateProcess")
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn do_kill(pid: u32, force: bool) {
+    match kill_process(pid, force) {
+        Ok(signal_name) => {
+            let mut out = io::stdout();
+            write_styled(&mut out, "  ✓", "green", true);
+            let _ = writeln!(out, " Sent {} to PID {}", signal_name, pid);
+        }
+        Err(err) => {
+            let mut out = io::stderr();
+            write_styled(&mut out, "  ✗", "red", true);
+            if err.kind() == io::ErrorKind::InvalidInput {
+                let _ = writeln!(out, " {}", err);
+            } else {
+                let _ = writeln!(out, " Failed to kill PID {}: {}", pid, err);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn do_kill(pid: u32, force: bool) {
+    match kill_process(pid, force) {
+        Ok(_) => {
             let mut out = io::stdout();
             write_styled(&mut out, "  ✓", "green", true);
             let _ = writeln!(out, " Terminated PID {}", pid);
-        } else {
-            let err = io::Error::last_os_error();
+        }
+        Err(err) => {
+            let mut out = io::stderr();
             write_styled(&mut out, "  ✗", "red", true);
-            let _ = writeln!(out, " Failed to terminate PID {}: {}", pid, err);
+            if err.kind() == io::ErrorKind::InvalidInput {
+                let _ = writeln!(out, " {}", err);
+            } else {
+                let _ = writeln!(out, " Failed to terminate PID {}: {}", pid, err);
+            }
         }
     }
 }
@@ -1223,6 +1292,30 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    // ── kill_process ────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_rejects_pid_zero() {
+        let err = kill_process(0, false).expect_err("PID 0 must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_rejects_pid_over_i32_max() {
+        let err = kill_process((i32::MAX as u32) + 1, false)
+            .expect_err("out-of-range PID must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kill_process_rejects_pid_zero() {
+        let err = kill_process(0, false).expect_err("PID 0 must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
     // ── format_bytes ────────────────────────────────────────────────
 
     #[test]
@@ -1397,6 +1490,29 @@ mod tests {
         // "café" is 5 bytes, so end=4 would split 'é'; should back up
         assert!(result.is_char_boundary(result.len().saturating_sub("…".len())));
         assert!(result.ends_with('…'));
+    }
+
+    // ── wrap_cmd ───────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_cmd_empty() {
+        assert_eq!(wrap_cmd("", 10), vec![String::new()]);
+    }
+
+    #[test]
+    fn wrap_cmd_ascii_width() {
+        assert_eq!(
+            wrap_cmd("abcdefghijkl", 5),
+            vec!["abcde".to_string(), "fghij".to_string(), "kl".to_string()]
+        );
+    }
+
+    #[test]
+    fn wrap_cmd_utf8_boundary() {
+        assert_eq!(
+            wrap_cmd("café123", 5),
+            vec!["café".to_string(), "123".to_string()]
+        );
     }
 
     // ── format_addr ─────────────────────────────────────────────────
