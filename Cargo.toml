@@ -1,6 +1,6 @@
 [package]
 name = "portview"
-version = "0.6.0"
+version = "1.0.0"
 edition = "2021"
 description = "A diagnostic-first port viewer. See what's on your ports, then act on it."
 license = "MIT"
@@ -10,8 +10,8 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-tabled = { version = "0.20", features = ["ansi"] }
-colored = "3"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

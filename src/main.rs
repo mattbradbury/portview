@@ -1,12 +1,10 @@
 use clap::Parser;
-use colored::Colorize;
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::ExecutableCommand;
 use std::io::{self, IsTerminal, Write};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tabled::settings::object::Columns;
-use tabled::settings::{Modify, Style, Width};
-use tabled::{Table, Tabled};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -22,6 +20,8 @@ use macos::get_port_infos;
 mod windows;
 #[cfg(target_os = "windows")]
 use windows::get_port_infos;
+
+mod tui;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 compile_error!("portview only supports Linux, macOS, and Windows");
@@ -160,7 +160,7 @@ impl TcpState {
         }
     }
 
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             TcpState::Listen => "LISTEN",
             TcpState::Established => "ESTABLISHED",
@@ -182,26 +182,6 @@ impl std::fmt::Display for TcpState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
-}
-
-#[derive(Tabled)]
-struct TableRow {
-    #[tabled(rename = "PORT")]
-    port: String,
-    #[tabled(rename = "PROTO")]
-    proto: String,
-    #[tabled(rename = "PID")]
-    pid: String,
-    #[tabled(rename = "USER")]
-    user: String,
-    #[tabled(rename = "PROCESS")]
-    process: String,
-    #[tabled(rename = "UPTIME")]
-    uptime: String,
-    #[tabled(rename = "MEM")]
-    memory: String,
-    #[tabled(rename = "COMMAND")]
-    command: String,
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────
@@ -281,7 +261,7 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn truncate_cmd(cmd: &str, max_len: usize) -> String {
+pub(crate) fn truncate_cmd(cmd: &str, max_len: usize) -> String {
     if cmd.len() > max_len {
         let mut end = max_len.saturating_sub(1);
         while end > 0 && !cmd.is_char_boundary(end) {
@@ -293,7 +273,7 @@ fn truncate_cmd(cmd: &str, max_len: usize) -> String {
     }
 }
 
-fn format_addr(addr: &IpAddr) -> String {
+pub(crate) fn format_addr(addr: &IpAddr) -> String {
     match addr {
         IpAddr::V4(v4) => {
             if v4.is_unspecified() {
@@ -320,7 +300,7 @@ fn format_addr(addr: &IpAddr) -> String {
 
 // ── Color config ─────────────────────────────────────────────────────
 
-struct ColorConfig {
+pub(crate) struct ColorConfig {
     port: String,
     proto: String,
     pid: String,
@@ -401,42 +381,131 @@ fn is_valid_color(s: &str) -> bool {
     )
 }
 
-fn apply_color(s: &str, color: &str) -> String {
-    match color {
-        "red" => s.red().to_string(),
-        "green" => s.green().to_string(),
-        "blue" => s.blue().to_string(),
-        "cyan" => s.cyan().to_string(),
-        "yellow" => s.yellow().to_string(),
-        "magenta" => s.magenta().to_string(),
-        "white" => s.white().to_string(),
-        "bold" => s.bold().to_string(),
-        "dimmed" => s.dimmed().to_string(),
-        "bright_red" => s.bright_red().to_string(),
-        "bright_green" => s.bright_green().to_string(),
-        "bright_blue" => s.bright_blue().to_string(),
-        "bright_cyan" => s.bright_cyan().to_string(),
-        "bright_yellow" => s.bright_yellow().to_string(),
-        "bright_magenta" => s.bright_magenta().to_string(),
-        "bright_white" => s.bright_white().to_string(),
-        _ => s.to_string(),
+/// Convert a color name to a crossterm style (color + optional attribute).
+pub(crate) fn color_name_to_style(name: &str) -> (Option<Color>, Option<Attribute>) {
+    match name {
+        "red" => (Some(Color::Red), None),
+        "green" => (Some(Color::Green), None),
+        "blue" => (Some(Color::Blue), None),
+        "cyan" => (Some(Color::Cyan), None),
+        "yellow" => (Some(Color::Yellow), None),
+        "magenta" => (Some(Color::Magenta), None),
+        "white" => (Some(Color::White), None),
+        "bold" => (None, Some(Attribute::Bold)),
+        "dimmed" => (None, Some(Attribute::Dim)),
+        "bright_red" => (Some(Color::DarkRed), Some(Attribute::Bold)),
+        "bright_green" => (Some(Color::DarkGreen), Some(Attribute::Bold)),
+        "bright_blue" => (Some(Color::DarkBlue), Some(Attribute::Bold)),
+        "bright_cyan" => (Some(Color::DarkCyan), Some(Attribute::Bold)),
+        "bright_yellow" => (Some(Color::DarkYellow), Some(Attribute::Bold)),
+        "bright_magenta" => (Some(Color::DarkMagenta), Some(Attribute::Bold)),
+        "bright_white" => (Some(Color::White), Some(Attribute::Bold)),
+        _ => (None, None), // "none" or unknown
     }
+}
+
+/// Ratatui style from color name (for TUI mode).
+pub(crate) fn color_name_to_ratatui_style(name: &str) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style};
+    match name {
+        "red" => Style::default().fg(ratatui::style::Color::Red),
+        "green" => Style::default().fg(ratatui::style::Color::Green),
+        "blue" => Style::default().fg(ratatui::style::Color::Blue),
+        "cyan" => Style::default().fg(ratatui::style::Color::Cyan),
+        "yellow" => Style::default().fg(ratatui::style::Color::Yellow),
+        "magenta" => Style::default().fg(ratatui::style::Color::Magenta),
+        "white" => Style::default().fg(ratatui::style::Color::White),
+        "bold" => Style::default().add_modifier(Modifier::BOLD),
+        "dimmed" => Style::default().add_modifier(Modifier::DIM),
+        "bright_red" => Style::default().fg(ratatui::style::Color::LightRed),
+        "bright_green" => Style::default().fg(ratatui::style::Color::LightGreen),
+        "bright_blue" => Style::default().fg(ratatui::style::Color::LightBlue),
+        "bright_cyan" => Style::default().fg(ratatui::style::Color::LightCyan),
+        "bright_yellow" => Style::default().fg(ratatui::style::Color::LightYellow),
+        "bright_magenta" => Style::default().fg(ratatui::style::Color::LightMagenta),
+        "bright_white" => Style::default()
+            .fg(ratatui::style::Color::White)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default(), // "none" or unknown
+    }
+}
+
+/// StyleConfig for TUI: holds ratatui styles per column.
+pub(crate) struct StyleConfig {
+    pub(crate) port: ratatui::style::Style,
+    pub(crate) proto: ratatui::style::Style,
+    pub(crate) pid: ratatui::style::Style,
+    pub(crate) user: ratatui::style::Style,
+    pub(crate) process: ratatui::style::Style,
+    pub(crate) uptime: ratatui::style::Style,
+    pub(crate) mem: ratatui::style::Style,
+    pub(crate) command: ratatui::style::Style,
+}
+
+impl StyleConfig {
+    pub(crate) fn from_color_config(cc: &ColorConfig) -> Self {
+        Self {
+            port: color_name_to_ratatui_style(&cc.port),
+            proto: color_name_to_ratatui_style(&cc.proto),
+            pid: color_name_to_ratatui_style(&cc.pid),
+            user: color_name_to_ratatui_style(&cc.user),
+            process: color_name_to_ratatui_style(&cc.process),
+            uptime: color_name_to_ratatui_style(&cc.uptime),
+            mem: color_name_to_ratatui_style(&cc.mem),
+            command: color_name_to_ratatui_style(&cc.command),
+        }
+    }
+
+    pub(crate) fn no_color() -> Self {
+        Self {
+            port: ratatui::style::Style::default(),
+            proto: ratatui::style::Style::default(),
+            pid: ratatui::style::Style::default(),
+            user: ratatui::style::Style::default(),
+            process: ratatui::style::Style::default(),
+            uptime: ratatui::style::Style::default(),
+            mem: ratatui::style::Style::default(),
+            command: ratatui::style::Style::default(),
+        }
+    }
+
+    pub(crate) fn btop_default() -> Self {
+        use ratatui::style::{Color, Modifier, Style};
+        Self {
+            port: Style::default().fg(Color::Rgb(80, 200, 200)),
+            proto: Style::default().fg(Color::Rgb(100, 110, 120)),
+            pid: Style::default().fg(Color::Rgb(220, 180, 80)),
+            user: Style::default().fg(Color::Rgb(120, 200, 130)),
+            process: Style::default()
+                .fg(Color::Rgb(220, 225, 230))
+                .add_modifier(Modifier::BOLD),
+            uptime: Style::default().fg(Color::Rgb(100, 110, 120)),
+            mem: Style::default().fg(Color::Rgb(160, 140, 200)),
+            command: Style::default().fg(Color::Rgb(170, 175, 180)),
+        }
+    }
+}
+
+// ── Crossterm styled write helper ────────────────────────────────────
+
+fn write_styled(w: &mut impl Write, text: &str, color_name: &str, use_color: bool) {
+    if !use_color {
+        let _ = write!(w, "{}", text);
+        return;
+    }
+    let (color, attr) = color_name_to_style(color_name);
+    if let Some(a) = attr {
+        let _ = w.execute(SetAttribute(a));
+    }
+    if let Some(c) = color {
+        let _ = w.execute(SetForegroundColor(c));
+    }
+    let _ = w.execute(Print(text));
+    let _ = w.execute(ResetColor);
+    let _ = w.execute(SetAttribute(Attribute::Reset));
 }
 
 // ── Display functions ────────────────────────────────────────────────
-
-fn to_table_row(info: &PortInfo, colors: &ColorConfig) -> TableRow {
-    TableRow {
-        port: apply_color(&info.port.to_string(), &colors.port),
-        proto: apply_color(&info.protocol, &colors.proto),
-        pid: apply_color(&info.pid.to_string(), &colors.pid),
-        user: apply_color(&info.user, &colors.user),
-        process: apply_color(&info.process_name, &colors.process),
-        uptime: apply_color(&format_uptime(info.start_time), &colors.uptime),
-        memory: apply_color(&format_bytes(info.memory_bytes), &colors.mem),
-        command: apply_color(&info.command, &colors.command),
-    }
-}
 
 fn display_table(
     infos: &[PortInfo],
@@ -446,41 +515,182 @@ fn display_table(
     cmd_width: usize,
 ) {
     if infos.is_empty() {
-        if use_color {
-            println!("{}", "No listening ports found.".dimmed());
-        } else {
-            println!("No listening ports found.");
-        }
+        let mut out = io::stdout();
+        write_styled(&mut out, "No listening ports found.\n", "dimmed", use_color);
         return;
     }
 
-    let rows: Vec<TableRow> = infos.iter().map(|i| to_table_row(i, colors)).collect();
+    let mut out = io::stdout();
 
-    let mut table = Table::new(&rows);
-    table.with(Style::rounded());
-    if wide {
-        table.with(Modify::new(Columns::last()).with(Width::wrap(cmd_width)));
+    // Compute column widths
+    let port_w = infos
+        .iter()
+        .map(|i| i.port.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    let proto_w = infos
+        .iter()
+        .map(|i| i.protocol.len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    let pid_w = infos
+        .iter()
+        .map(|i| i.pid.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let user_w = infos.iter().map(|i| i.user.len()).max().unwrap_or(0).max(4);
+    let proc_w = infos
+        .iter()
+        .map(|i| i.process_name.len())
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let uptime_w = infos
+        .iter()
+        .map(|i| format_uptime(i.start_time).len())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    let mem_w = infos
+        .iter()
+        .map(|i| format_bytes(i.memory_bytes).len())
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let actual_cmd_w = if wide {
+        infos
+            .iter()
+            .map(|i| i.command.len())
+            .max()
+            .unwrap_or(0)
+            .max(7)
+    } else {
+        cmd_width.max(7)
+    };
+
+    let widths = [
+        port_w,
+        proto_w,
+        pid_w,
+        user_w,
+        proc_w,
+        uptime_w,
+        mem_w,
+        actual_cmd_w,
+    ];
+    let headers = [
+        "PORT", "PROTO", "PID", "USER", "PROCESS", "UPTIME", "MEM", "COMMAND",
+    ];
+
+    // Top border
+    let _ = write!(out, "╭");
+    for (i, &w) in widths.iter().enumerate() {
+        let _ = write!(out, "{}", "─".repeat(w + 2));
+        if i < widths.len() - 1 {
+            let _ = write!(out, "┬");
+        }
     }
-    println!("{}", table);
+    let _ = writeln!(out, "╮");
+
+    // Header
+    let _ = write!(out, "│");
+    for (i, (&w, &h)) in widths.iter().zip(headers.iter()).enumerate() {
+        let _ = write!(out, " ");
+        if use_color {
+            let _ = out.execute(SetAttribute(Attribute::Bold));
+        }
+        let _ = write!(out, "{:<width$}", h, width = w);
+        if use_color {
+            let _ = out.execute(SetAttribute(Attribute::Reset));
+        }
+        let _ = write!(out, " │");
+        let _ = i; // used in loop
+    }
+    let _ = writeln!(out);
+
+    // Separator
+    let _ = write!(out, "├");
+    for (i, &w) in widths.iter().enumerate() {
+        let _ = write!(out, "{}", "─".repeat(w + 2));
+        if i < widths.len() - 1 {
+            let _ = write!(out, "┼");
+        }
+    }
+    let _ = writeln!(out, "┤");
+
+    // Data rows
+    let color_names = [
+        &colors.port,
+        &colors.proto,
+        &colors.pid,
+        &colors.user,
+        &colors.process,
+        &colors.uptime,
+        &colors.mem,
+        &colors.command,
+    ];
+
+    for info in infos {
+        let uptime_str = format_uptime(info.start_time);
+        let mem_str = format_bytes(info.memory_bytes);
+        let values = [
+            info.port.to_string(),
+            info.protocol.clone(),
+            info.pid.to_string(),
+            info.user.clone(),
+            info.process_name.clone(),
+            uptime_str,
+            mem_str,
+            info.command.clone(),
+        ];
+
+        let _ = write!(out, "│");
+        for (i, (&w, val)) in widths.iter().zip(values.iter()).enumerate() {
+            let _ = write!(out, " ");
+            let padded = format!("{:<width$}", val, width = w);
+            write_styled(&mut out, &padded, color_names[i], use_color);
+            let _ = write!(out, " │");
+        }
+        let _ = writeln!(out);
+    }
+
+    // Bottom border
+    let _ = write!(out, "╰");
+    for (i, &w) in widths.iter().enumerate() {
+        let _ = write!(out, "{}", "─".repeat(w + 2));
+        if i < widths.len() - 1 {
+            let _ = write!(out, "┴");
+        }
+    }
+    let _ = writeln!(out, "╯");
 }
 
 fn display_detail(info: &PortInfo, use_color: bool) {
+    let mut out = io::stdout();
     let bind_str = format!("{}:{}", format_addr(&info.local_addr), info.port);
     let uptime = format_uptime(info.start_time);
 
+    let _ = writeln!(out);
     if use_color {
-        println!(
-            "\n{} {} ({}) {} {} (PID {})",
-            "Port".bold(),
-            info.port.to_string().bold().cyan(),
-            info.protocol.dimmed(),
-            "—".dimmed(),
-            info.process_name.bold().green(),
-            info.pid.to_string().yellow(),
-        );
+        write_styled(&mut out, "Port", "bold", true);
+        let _ = write!(out, " ");
+        write_styled(&mut out, &info.port.to_string(), "cyan", true);
+        let _ = write!(out, " ");
+        write_styled(&mut out, &format!("({})", info.protocol), "dimmed", true);
+        let _ = write!(out, " ");
+        write_styled(&mut out, "—", "dimmed", true);
+        let _ = write!(out, " ");
+        write_styled(&mut out, &info.process_name, "green", true);
+        let _ = write!(out, " ");
+        write_styled(&mut out, &format!("(PID {})", info.pid), "yellow", true);
+        let _ = writeln!(out);
     } else {
-        println!(
-            "\nPort {} ({}) — {} (PID {})",
+        let _ = writeln!(
+            out,
+            "Port {} ({}) — {} (PID {})",
             info.port, info.protocol, info.process_name, info.pid,
         );
     }
@@ -505,9 +715,11 @@ fn display_detail(info: &PortInfo, use_color: bool) {
 
     for (label, value) in rows {
         if use_color {
-            println!("  {}  {}", label.dimmed(), value);
+            let _ = write!(out, "  ");
+            write_styled(&mut out, label, "dimmed", true);
+            let _ = writeln!(out, "  {}", value);
         } else {
-            println!("  {:<9} {}", label, value);
+            let _ = writeln!(out, "  {:<9} {}", label, value);
         }
     }
 }
@@ -531,17 +743,20 @@ fn prompt_kill(pid: u32, force: bool) -> bool {
 }
 
 #[cfg(unix)]
-fn do_kill(pid: u32, force: bool) {
+pub(crate) fn do_kill(pid: u32, force: bool) {
+    let mut out = io::stderr();
     // Guard against special PIDs and overflow on cast to i32
     if pid == 0 {
-        eprintln!(
-            "  {} Refusing to signal PID 0 (would target entire process group)",
-            "✗".red().bold(),
+        write_styled(&mut out, "  ✗", "red", true);
+        let _ = writeln!(
+            out,
+            " Refusing to signal PID 0 (would target entire process group)"
         );
         return;
     }
     if pid > i32::MAX as u32 {
-        eprintln!("  {} PID {} exceeds safe range", "✗".red().bold(), pid);
+        write_styled(&mut out, "  ✗", "red", true);
+        let _ = writeln!(out, " PID {} exceeds safe range", pid);
         return;
     }
 
@@ -553,25 +768,25 @@ fn do_kill(pid: u32, force: bool) {
     let result = unsafe { libc::kill(pid as i32, signal) };
 
     if result == 0 {
-        println!(
-            "  {} Sent {} to PID {}",
-            "✓".green().bold(),
-            signal_name,
-            pid
-        );
+        let mut out = io::stdout();
+        write_styled(&mut out, "  ✓", "green", true);
+        let _ = writeln!(out, " Sent {} to PID {}", signal_name, pid);
     } else {
         let err = io::Error::last_os_error();
-        eprintln!("  {} Failed to kill PID {}: {}", "✗".red().bold(), pid, err);
+        write_styled(&mut out, "  ✗", "red", true);
+        let _ = writeln!(out, " Failed to kill PID {}: {}", pid, err);
     }
 }
 
 #[cfg(windows)]
-fn do_kill(pid: u32, _force: bool) {
+pub(crate) fn do_kill(pid: u32, _force: bool) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
+    let mut out = io::stderr();
     if pid == 0 {
-        eprintln!("  {} Refusing to terminate PID 0", "✗".red().bold(),);
+        write_styled(&mut out, "  ✗", "red", true);
+        let _ = writeln!(out, " Refusing to terminate PID 0");
         return;
     }
 
@@ -579,7 +794,8 @@ fn do_kill(pid: u32, _force: bool) {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
             let err = io::Error::last_os_error();
-            eprintln!("  {} Failed to open PID {}: {}", "✗".red().bold(), pid, err);
+            write_styled(&mut out, "  ✗", "red", true);
+            let _ = writeln!(out, " Failed to open PID {}: {}", pid, err);
             return;
         }
 
@@ -588,15 +804,13 @@ fn do_kill(pid: u32, _force: bool) {
         CloseHandle(handle);
 
         if result != 0 {
-            println!("  {} Terminated PID {}", "✓".green().bold(), pid);
+            let mut out = io::stdout();
+            write_styled(&mut out, "  ✓", "green", true);
+            let _ = writeln!(out, " Terminated PID {}", pid);
         } else {
             let err = io::Error::last_os_error();
-            eprintln!(
-                "  {} Failed to terminate PID {}: {}",
-                "✗".red().bold(),
-                pid,
-                err
-            );
+            write_styled(&mut out, "  ✗", "red", true);
+            let _ = writeln!(out, " Failed to terminate PID {}: {}", pid, err);
         }
     }
 }
@@ -642,39 +856,9 @@ fn display_json(infos: &[PortInfo]) {
     println!("]");
 }
 
-// ── Watch-mode helpers ────────────────────────────────────────────────
+// ── Watch-mode helpers (JSON watch only) ─────────────────────────────
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
-
-fn enter_alt_screen() {
-    print!("\x1B[?1049h");
-    let _ = io::stdout().flush();
-}
-
-fn leave_alt_screen() {
-    print!("\x1B[?1049l");
-    let _ = io::stdout().flush();
-}
-
-fn cursor_home() {
-    print!("\x1B[H");
-    let _ = io::stdout().flush();
-}
-
-fn erase_below() {
-    print!("\x1B[J");
-    let _ = io::stdout().flush();
-}
-
-fn hide_cursor() {
-    print!("\x1B[?25l");
-    let _ = io::stdout().flush();
-}
-
-fn show_cursor() {
-    print!("\x1B[?25h");
-    let _ = io::stdout().flush();
-}
 
 #[cfg(unix)]
 extern "C" fn handle_sigint(_sig: libc::c_int) {
@@ -692,18 +876,8 @@ unsafe extern "system" fn handle_ctrl(ctrl_type: u32) -> i32 {
     }
 }
 
-fn print_watch_footer(use_color: bool) {
-    let now = chrono_free_time();
-    let line = format!("Watching every 1s · Updated {} · Ctrl+C to quit", now);
-    if use_color {
-        println!("\n{}", line.dimmed());
-    } else {
-        println!("\n{}", line);
-    }
-}
-
 #[cfg(unix)]
-fn chrono_free_time() -> String {
+pub(crate) fn chrono_free_time() -> String {
     // Get wall-clock HH:MM:SS without pulling in chrono
     let secs_since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -727,7 +901,7 @@ fn chrono_free_time() -> String {
 }
 
 #[cfg(windows)]
-fn chrono_free_time() -> String {
+pub(crate) fn chrono_free_time() -> String {
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
     let mut st = unsafe { std::mem::zeroed::<windows_sys::Win32::Foundation::SYSTEMTIME>() };
@@ -735,45 +909,10 @@ fn chrono_free_time() -> String {
     format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
 }
 
-// ── Terminal helpers ──────────────────────────────────────────────────
+// ── Terminal width (for one-shot display) ────────────────────────────
 
-#[cfg(unix)]
 fn get_terminal_width() -> Option<u16> {
-    unsafe {
-        let mut winsize: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut winsize) == 0
-            && winsize.ws_col > 0
-        {
-            Some(winsize.ws_col)
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(windows)]
-fn get_terminal_width() -> Option<u16> {
-    use windows_sys::Win32::System::Console::{
-        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
-    };
-
-    unsafe {
-        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
-        if handle.is_null() {
-            return None;
-        }
-        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
-        if GetConsoleScreenBufferInfo(handle, &mut info) != 0 {
-            let width = info.srWindow.Right - info.srWindow.Left + 1;
-            if width > 0 {
-                Some(width as u16)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
+    crossterm::terminal::size().ok().map(|(w, _)| w)
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -781,10 +920,6 @@ fn get_terminal_width() -> Option<u16> {
 fn main() {
     let cli = Cli::parse();
     let use_color = !cli.no_color && atty_stdout();
-
-    if cli.no_color {
-        colored::control::set_override(false);
-    }
 
     let colors = ColorConfig::from_env();
 
@@ -812,24 +947,24 @@ fn main() {
     }
 
     if cli.watch {
-        // Register signal/ctrl handler for clean exit
-        #[cfg(unix)]
-        unsafe {
-            libc::signal(
-                libc::SIGINT,
-                handle_sigint as *const () as libc::sighandler_t,
-            );
-        }
-        #[cfg(windows)]
-        unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
-                Some(handle_ctrl),
-                1, // TRUE — add handler
-            );
-        }
-
         if cli.json {
             // JSON watch: emit one JSON array per tick, no terminal escapes
+            // Register signal/ctrl handler for clean exit
+            #[cfg(unix)]
+            unsafe {
+                libc::signal(
+                    libc::SIGINT,
+                    handle_sigint as *const () as libc::sighandler_t,
+                );
+            }
+            #[cfg(windows)]
+            unsafe {
+                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                    Some(handle_ctrl),
+                    1, // TRUE — add handler
+                );
+            }
+
             while RUNNING.load(Ordering::SeqCst) {
                 if write_display_safe(&cli, use_color, &colors).is_err() {
                     break; // broken pipe
@@ -843,32 +978,27 @@ fn main() {
                 }
             }
         } else {
-            enter_alt_screen();
-            hide_cursor();
+            // Interactive TUI mode
+            let has_env_colors = std::env::var("PORTVIEW_COLORS").is_ok();
+            let style_config = if cli.no_color {
+                StyleConfig::no_color()
+            } else if has_env_colors {
+                StyleConfig::from_color_config(&colors)
+            } else {
+                StyleConfig::btop_default()
+            };
 
-            while RUNNING.load(Ordering::SeqCst) {
-                // Synchronized update: terminal buffers all output between
-                // begin/end markers and renders in a single
-                // frame — no flicker even though we clear the screen.
-                print!("\x1B[?2026h");
-                cursor_home();
-                erase_below();
-                run_display(&cli, use_color, &colors);
-                print_watch_footer(use_color);
-                print!("\x1B[?2026l");
-                let _ = io::stdout().flush();
-
-                // Sleep in small increments so we respond to Ctrl+C quickly
-                for _ in 0..20 {
-                    if !RUNNING.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
+            if let Err(e) = tui::run_tui(
+                cli.target.as_deref(),
+                cli.all,
+                cli.wide,
+                cli.force,
+                cli.no_color,
+                style_config,
+            ) {
+                eprintln!("TUI error: {}", e);
+                std::process::exit(1);
             }
-
-            show_cursor();
-            leave_alt_screen();
         }
     } else {
         run_display(&cli, use_color, &colors);
@@ -925,7 +1055,7 @@ fn compute_cmd_width(infos: &[PortInfo]) -> usize {
 
     let data_width = port_w + proto_w + pid_w + user_w + process_w + uptime_w + mem_w;
 
-    // Rounded style: 9 vertical borders + 1 space padding on each side of each of 8 columns
+    // Box-drawing style: 9 vertical borders + 1 space padding on each side of each of 8 columns
     let chrome = 9 + (8 * 2);
 
     cols.saturating_sub(data_width + chrome).max(20)
@@ -952,19 +1082,27 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                     }
                 }
                 if use_color {
-                    println!(
-                        "\n{}",
-                        format!(
-                            " {} listening port{} ",
+                    let mut out = io::stdout();
+                    write_styled(
+                        &mut out,
+                        &format!(
+                            "\n {} listening port{} \n",
                             infos.len(),
                             if infos.len() == 1 { "" } else { "s" }
-                        )
-                        .bold()
+                        ),
+                        "bold",
+                        true,
                     );
                 }
                 display_table(&infos, use_color, colors, cli.wide, cmd_width);
                 if use_color && !infos.is_empty() && !cli.watch {
-                    println!("{}", "  Inspect a port: portview <port>".dimmed());
+                    let mut out = io::stdout();
+                    write_styled(
+                        &mut out,
+                        "  Inspect a port: portview <port>\n",
+                        "dimmed",
+                        true,
+                    );
                 }
             }
         }
@@ -977,14 +1115,17 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                 if matches.is_empty() {
                     if cli.json {
                         println!("[]");
-                    } else if use_color {
-                        println!(
-                            "\n  {} Nothing on port {}",
-                            "○".dimmed(),
-                            port.to_string().bold()
-                        );
                     } else {
-                        println!("\n  Nothing on port {}", port);
+                        let mut out = io::stdout();
+                        if use_color {
+                            let _ = write!(out, "\n  ");
+                            write_styled(&mut out, "○", "dimmed", true);
+                            let _ = write!(out, " Nothing on port ");
+                            write_styled(&mut out, &port.to_string(), "bold", true);
+                            let _ = writeln!(out);
+                        } else {
+                            let _ = writeln!(out, "\n  Nothing on port {}", port);
+                        }
                     }
                     if !cli.watch {
                         std::process::exit(1);
@@ -1018,14 +1159,15 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                     .collect();
 
                 if matches.is_empty() {
+                    let mut out = io::stdout();
                     if use_color {
-                        println!(
-                            "\n  {} No ports found for '{}'",
-                            "○".dimmed(),
-                            target.bold()
-                        );
+                        let _ = write!(out, "\n  ");
+                        write_styled(&mut out, "○", "dimmed", true);
+                        let _ = write!(out, " No ports found for '");
+                        write_styled(&mut out, target, "bold", true);
+                        let _ = writeln!(out, "'");
                     } else {
-                        println!("\n  No ports found for '{}'", target);
+                        let _ = writeln!(out, "\n  No ports found for '{}'", target);
                     }
                     if !cli.watch {
                         std::process::exit(1);
@@ -1040,16 +1182,20 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                         }
                     }
                     if use_color {
-                        println!(
-                            "\n {} matching '{}'",
-                            format!(
-                                " {} port{}",
+                        let mut out = io::stdout();
+                        write_styled(
+                            &mut out,
+                            &format!(
+                                "\n {} port{}",
                                 matches.len(),
                                 if matches.len() == 1 { "" } else { "s" }
-                            )
-                            .bold(),
-                            target.cyan()
+                            ),
+                            "bold",
+                            true,
                         );
+                        let _ = write!(out, " matching '");
+                        write_styled(&mut out, target, "cyan", true);
+                        let _ = writeln!(out, "'");
                     }
 
                     display_table(&matches, use_color, colors, cli.wide, cmd_width);
@@ -1395,5 +1541,42 @@ mod tests {
             "expected hours in days format: {}",
             result
         );
+    }
+
+    // ── color_name_to_style ─────────────────────────────────────────
+
+    #[test]
+    fn color_name_to_style_basic_colors() {
+        assert_eq!(color_name_to_style("red"), (Some(Color::Red), None));
+        assert_eq!(color_name_to_style("green"), (Some(Color::Green), None));
+        assert_eq!(color_name_to_style("cyan"), (Some(Color::Cyan), None));
+    }
+
+    #[test]
+    fn color_name_to_style_modifiers() {
+        assert_eq!(color_name_to_style("bold"), (None, Some(Attribute::Bold)));
+        assert_eq!(color_name_to_style("dimmed"), (None, Some(Attribute::Dim)));
+    }
+
+    #[test]
+    fn color_name_to_style_none() {
+        assert_eq!(color_name_to_style("none"), (None, None));
+        assert_eq!(color_name_to_style("unknown"), (None, None));
+    }
+
+    // ── color_name_to_ratatui_style ─────────────────────────────────
+
+    #[test]
+    fn ratatui_style_basic() {
+        use ratatui::style::{Modifier, Style};
+
+        let s = color_name_to_ratatui_style("red");
+        assert_eq!(s, Style::default().fg(ratatui::style::Color::Red));
+
+        let s = color_name_to_ratatui_style("bold");
+        assert_eq!(s, Style::default().add_modifier(Modifier::BOLD));
+
+        let s = color_name_to_ratatui_style("none");
+        assert_eq!(s, Style::default());
     }
 }
