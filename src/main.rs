@@ -852,11 +852,6 @@ fn leave_alt_screen() {
     let _ = io::stdout().flush();
 }
 
-fn clear_screen() {
-    print!("\x1B[2J\x1B[H");
-    let _ = io::stdout().flush();
-}
-
 fn cursor_home() {
     print!("\x1B[H");
     let _ = io::stdout().flush();
@@ -972,13 +967,17 @@ fn main() {
         enter_alt_screen();
         hide_cursor();
 
-        // Clear once on first frame, then overwrite in-place
-        clear_screen();
         while RUNNING.load(Ordering::SeqCst) {
+            // Synchronized update: terminal buffers all output between
+            // begin/end markers and renders in a single
+            // frame — no flicker even though we clear the screen.
+            print!("\x1B[?2026h");
             cursor_home();
+            erase_below();
             run_display(&cli, use_color, &colors);
             print_watch_footer(use_color);
-            erase_below();
+            print!("\x1B[?2026l");
+            let _ = io::stdout().flush();
 
             // Sleep in small increments so we respond to Ctrl+C quickly
             for _ in 0..20 {
