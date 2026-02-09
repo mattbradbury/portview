@@ -525,8 +525,13 @@ pub fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
         }
     }
 
-    // Sort by port number
-    infos.sort_by(|a, b| a.port.cmp(&b.port).then_with(|| a.protocol.cmp(&b.protocol)));
+    // Sort by port number, then protocol, then pid (pid needed for dedup_by adjacency)
+    infos.sort_by(|a, b| {
+        a.port
+            .cmp(&b.port)
+            .then_with(|| a.protocol.cmp(&b.protocol))
+            .then_with(|| a.pid.cmp(&b.pid))
+    });
 
     // Deduplicate (same port+proto+pid can appear for v4 and v6)
     infos.dedup_by(|a, b| a.port == b.port && a.protocol == b.protocol && a.pid == b.pid);

@@ -835,32 +835,49 @@ fn main() {
                 1, // TRUE — add handler
             );
         }
-        enter_alt_screen();
-        hide_cursor();
 
-        while RUNNING.load(Ordering::SeqCst) {
-            // Synchronized update: terminal buffers all output between
-            // begin/end markers and renders in a single
-            // frame — no flicker even though we clear the screen.
-            print!("\x1B[?2026h");
-            cursor_home();
-            erase_below();
-            run_display(&cli, use_color, &colors);
-            print_watch_footer(use_color);
-            print!("\x1B[?2026l");
-            let _ = io::stdout().flush();
-
-            // Sleep in small increments so we respond to Ctrl+C quickly
-            for _ in 0..20 {
-                if !RUNNING.load(Ordering::SeqCst) {
-                    break;
+        if cli.json {
+            // JSON watch: emit one JSON array per tick, no terminal escapes
+            while RUNNING.load(Ordering::SeqCst) {
+                if write_display_safe(&cli, use_color, &colors).is_err() {
+                    break; // broken pipe
                 }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
 
-        show_cursor();
-        leave_alt_screen();
+                for _ in 0..20 {
+                    if !RUNNING.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        } else {
+            enter_alt_screen();
+            hide_cursor();
+
+            while RUNNING.load(Ordering::SeqCst) {
+                // Synchronized update: terminal buffers all output between
+                // begin/end markers and renders in a single
+                // frame — no flicker even though we clear the screen.
+                print!("\x1B[?2026h");
+                cursor_home();
+                erase_below();
+                run_display(&cli, use_color, &colors);
+                print_watch_footer(use_color);
+                print!("\x1B[?2026l");
+                let _ = io::stdout().flush();
+
+                // Sleep in small increments so we respond to Ctrl+C quickly
+                for _ in 0..20 {
+                    if !RUNNING.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+
+            show_cursor();
+            leave_alt_screen();
+        }
     } else {
         run_display(&cli, use_color, &colors);
     }
@@ -890,6 +907,12 @@ fn compute_cmd_width(infos: &[PortInfo]) -> usize {
     let chrome = 9 + (8 * 2);
 
     cols.saturating_sub(data_width + chrome).max(20)
+}
+
+/// Run display and catch broken pipe errors (for piped JSON watch mode).
+fn write_display_safe(cli: &Cli, use_color: bool, colors: &ColorConfig) -> io::Result<()> {
+    run_display(cli, use_color, colors);
+    io::stdout().flush()
 }
 
 fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
@@ -933,7 +956,9 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                 let matches: Vec<&PortInfo> = infos.iter().filter(|i| i.port == port).collect();
 
                 if matches.is_empty() {
-                    if use_color {
+                    if cli.json {
+                        println!("[]");
+                    } else if use_color {
                         println!(
                             "\n  {} Nothing on port {}",
                             "○".dimmed(),
@@ -943,31 +968,30 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                         println!("\n  Nothing on port {}", port);
                     }
                     if !cli.watch {
-                        std::process::exit(0);
+                        std::process::exit(1);
                     }
                     return;
                 }
 
-                for info in &matches {
-                    display_detail(info, use_color);
-                }
+                if cli.json {
+                    let owned: Vec<PortInfo> = matches.into_iter().cloned().collect();
+                    display_json(&owned);
+                } else {
+                    for info in &matches {
+                        display_detail(info, use_color);
+                    }
 
-                // Offer to kill interactively (only when NOT watching)
-                if !cli.watch && matches.len() == 1 && atty_stdout() && atty_stdin() {
-                    prompt_kill(matches[0].pid, cli.force);
-                }
-            } else {
-                // Search by process name
-                let mut infos = get_port_infos(!cli.all);
-                let cmd_width = compute_cmd_width(&infos);
-                if !cli.wide {
-                    for info in &mut infos {
-                        info.command = truncate_cmd(&info.command, cmd_width);
+                    // Offer to kill interactively (only when NOT watching)
+                    if !cli.watch && matches.len() == 1 && atty_stdout() && atty_stdin() {
+                        prompt_kill(matches[0].pid, cli.force);
                     }
                 }
+            } else {
+                // Search by process name — filter on full command, then truncate for display
+                let mut infos = get_port_infos(!cli.all);
                 let target_lower = target.to_lowercase();
-                let matches: Vec<&PortInfo> = infos
-                    .iter()
+                let mut matches: Vec<PortInfo> = infos
+                    .drain(..)
                     .filter(|i| {
                         i.process_name.to_lowercase().contains(&target_lower)
                             || i.command.to_lowercase().contains(&target_lower)
@@ -988,15 +1012,25 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                         std::process::exit(1);
                     }
                 } else {
-                    if use_color {
-                        println!(
-                            "\n {} matching '{}'",
-                            format!(" {} port{}", matches.len(), if matches.len() == 1 { "" } else { "s" }).bold(),
-                            target.cyan()
-                        );
-                    }
+                    if cli.json {
+                        display_json(&matches);
+                    } else {
+                        let cmd_width = compute_cmd_width(&matches);
+                        if !cli.wide {
+                            for info in &mut matches {
+                                info.command = truncate_cmd(&info.command, cmd_width);
+                            }
+                        }
+                        if use_color {
+                            println!(
+                                "\n {} matching '{}'",
+                                format!(" {} port{}", matches.len(), if matches.len() == 1 { "" } else { "s" }).bold(),
+                                target.cyan()
+                            );
+                        }
 
-                    display_table(&matches.iter().copied().cloned().collect::<Vec<_>>(), use_color, colors, cli.wide, cmd_width);
+                        display_table(&matches, use_color, colors, cli.wide, cmd_width);
+                    }
                 }
             }
         }
