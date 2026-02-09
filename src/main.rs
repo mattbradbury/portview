@@ -438,7 +438,13 @@ fn to_table_row(info: &PortInfo, colors: &ColorConfig) -> TableRow {
     }
 }
 
-fn display_table(infos: &[PortInfo], use_color: bool, colors: &ColorConfig, wide: bool, cmd_width: usize) {
+fn display_table(
+    infos: &[PortInfo],
+    use_color: bool,
+    colors: &ColorConfig,
+    wide: bool,
+    cmd_width: usize,
+) {
     if infos.is_empty() {
         if use_color {
             println!("{}", "No listening ports found.".dimmed());
@@ -483,7 +489,14 @@ fn display_detail(info: &PortInfo, use_color: bool) {
         ("Bind:", bind_str),
         ("Command:", info.command.clone()),
         ("User:", info.user.clone()),
-        ("Started:", if use_color { uptime.clone() } else { format!("{} ago", uptime) }),
+        (
+            "Started:",
+            if use_color {
+                uptime.clone()
+            } else {
+                format!("{} ago", uptime)
+            },
+        ),
         ("Memory:", format_bytes(info.memory_bytes)),
         ("CPU time:", format!("{:.1}s", info.cpu_seconds)),
         ("Children:", info.children.to_string()),
@@ -528,11 +541,7 @@ fn do_kill(pid: u32, force: bool) {
         return;
     }
     if pid > i32::MAX as u32 {
-        eprintln!(
-            "  {} PID {} exceeds safe range",
-            "✗".red().bold(),
-            pid
-        );
+        eprintln!("  {} PID {} exceeds safe range", "✗".red().bold(), pid);
         return;
     }
 
@@ -552,27 +561,17 @@ fn do_kill(pid: u32, force: bool) {
         );
     } else {
         let err = io::Error::last_os_error();
-        eprintln!(
-            "  {} Failed to kill PID {}: {}",
-            "✗".red().bold(),
-            pid,
-            err
-        );
+        eprintln!("  {} Failed to kill PID {}: {}", "✗".red().bold(), pid, err);
     }
 }
 
 #[cfg(windows)]
 fn do_kill(pid: u32, _force: bool) {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
     if pid == 0 {
-        eprintln!(
-            "  {} Refusing to terminate PID 0",
-            "✗".red().bold(),
-        );
+        eprintln!("  {} Refusing to terminate PID 0", "✗".red().bold(),);
         return;
     }
 
@@ -580,12 +579,7 @@ fn do_kill(pid: u32, _force: bool) {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
             let err = io::Error::last_os_error();
-            eprintln!(
-                "  {} Failed to open PID {}: {}",
-                "✗".red().bold(),
-                pid,
-                err
-            );
+            eprintln!("  {} Failed to open PID {}: {}", "✗".red().bold(), pid, err);
             return;
         }
 
@@ -594,11 +588,7 @@ fn do_kill(pid: u32, _force: bool) {
         CloseHandle(handle);
 
         if result != 0 {
-            println!(
-                "  {} Terminated PID {}",
-                "✓".green().bold(),
-                pid
-            );
+            println!("  {} Terminated PID {}", "✓".green().bold(), pid);
         } else {
             let err = io::Error::last_os_error();
             eprintln!(
@@ -764,8 +754,7 @@ fn get_terminal_width() -> Option<u16> {
 #[cfg(windows)]
 fn get_terminal_width() -> Option<u16> {
     use windows_sys::Win32::System::Console::{
-        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO,
-        STD_OUTPUT_HANDLE,
+        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
     };
 
     unsafe {
@@ -893,13 +882,43 @@ fn compute_cmd_width(infos: &[PortInfo]) -> usize {
     }
 
     // Measure the max content width of each non-command column (min = header width)
-    let port_w = infos.iter().map(|i| i.port.to_string().len()).max().unwrap_or(0).max(4);     // "PORT"
-    let proto_w = infos.iter().map(|i| i.protocol.len()).max().unwrap_or(0).max(5);             // "PROTO"
-    let pid_w = infos.iter().map(|i| i.pid.to_string().len()).max().unwrap_or(0).max(3);        // "PID"
-    let user_w = infos.iter().map(|i| i.user.len()).max().unwrap_or(0).max(4);                  // "USER"
-    let process_w = infos.iter().map(|i| i.process_name.len()).max().unwrap_or(0).max(7);       // "PROCESS"
-    let uptime_w = infos.iter().map(|i| format_uptime(i.start_time).len()).max().unwrap_or(0).max(6); // "UPTIME"
-    let mem_w = infos.iter().map(|i| format_bytes(i.memory_bytes).len()).max().unwrap_or(0).max(3);   // "MEM"
+    let port_w = infos
+        .iter()
+        .map(|i| i.port.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(4); // "PORT"
+    let proto_w = infos
+        .iter()
+        .map(|i| i.protocol.len())
+        .max()
+        .unwrap_or(0)
+        .max(5); // "PROTO"
+    let pid_w = infos
+        .iter()
+        .map(|i| i.pid.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(3); // "PID"
+    let user_w = infos.iter().map(|i| i.user.len()).max().unwrap_or(0).max(4); // "USER"
+    let process_w = infos
+        .iter()
+        .map(|i| i.process_name.len())
+        .max()
+        .unwrap_or(0)
+        .max(7); // "PROCESS"
+    let uptime_w = infos
+        .iter()
+        .map(|i| format_uptime(i.start_time).len())
+        .max()
+        .unwrap_or(0)
+        .max(6); // "UPTIME"
+    let mem_w = infos
+        .iter()
+        .map(|i| format_bytes(i.memory_bytes).len())
+        .max()
+        .unwrap_or(0)
+        .max(3); // "MEM"
 
     let data_width = port_w + proto_w + pid_w + user_w + process_w + uptime_w + mem_w;
 
@@ -942,10 +961,7 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                 }
                 display_table(&infos, use_color, colors, cli.wide, cmd_width);
                 if use_color && !infos.is_empty() && !cli.watch {
-                    println!(
-                        "{}",
-                        "  Inspect a port: portview <port>".dimmed()
-                    );
+                    println!("{}", "  Inspect a port: portview <port>".dimmed());
                 }
             }
         }
@@ -1011,26 +1027,29 @@ fn run_display(cli: &Cli, use_color: bool, colors: &ColorConfig) {
                     if !cli.watch {
                         std::process::exit(1);
                     }
+                } else if cli.json {
+                    display_json(&matches);
                 } else {
-                    if cli.json {
-                        display_json(&matches);
-                    } else {
-                        let cmd_width = compute_cmd_width(&matches);
-                        if !cli.wide {
-                            for info in &mut matches {
-                                info.command = truncate_cmd(&info.command, cmd_width);
-                            }
+                    let cmd_width = compute_cmd_width(&matches);
+                    if !cli.wide {
+                        for info in &mut matches {
+                            info.command = truncate_cmd(&info.command, cmd_width);
                         }
-                        if use_color {
-                            println!(
-                                "\n {} matching '{}'",
-                                format!(" {} port{}", matches.len(), if matches.len() == 1 { "" } else { "s" }).bold(),
-                                target.cyan()
-                            );
-                        }
-
-                        display_table(&matches, use_color, colors, cli.wide, cmd_width);
                     }
+                    if use_color {
+                        println!(
+                            "\n {} matching '{}'",
+                            format!(
+                                " {} port{}",
+                                matches.len(),
+                                if matches.len() == 1 { "" } else { "s" }
+                            )
+                            .bold(),
+                            target.cyan()
+                        );
+                    }
+
+                    display_table(&matches, use_color, colors, cli.wide, cmd_width);
                 }
             }
         }

@@ -86,7 +86,7 @@ fn parse_proc_net(path: &str, protocol: &str, ipv6: bool) -> Vec<SocketEntry> {
             let (remote_addr, remote_port) = parse_addr_port(fields[2], ipv6);
             let state = if is_udp {
                 match fields[3] {
-                    "07" => TcpState::Listen, // UDP bound/receiving
+                    "07" => TcpState::Listen,      // UDP bound/receiving
                     "01" => TcpState::Established, // UDP connected via connect()
                     _ => TcpState::Unknown,
                 }
@@ -147,7 +147,10 @@ fn build_inode_to_pid_map() -> HashMap<u64, u32> {
                 Err(_) => continue,
             };
             let link_str = link.to_string_lossy();
-            if let Some(inode_str) = link_str.strip_prefix("socket:[").and_then(|s| s.strip_suffix(']')) {
+            if let Some(inode_str) = link_str
+                .strip_prefix("socket:[")
+                .and_then(|s| s.strip_suffix(']'))
+            {
                 if let Ok(inode) = inode_str.parse::<u64>() {
                     map.insert(inode, pid);
                 }
@@ -189,9 +192,19 @@ fn parse_proc_status(pid: u32) -> (u32, u64) {
     let mut rss_bytes = 0u64;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("Uid:") {
-            uid = rest.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+            uid = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+            let kb: u64 = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
             rss_bytes = kb * 1024;
         }
     }
@@ -244,8 +257,8 @@ fn parse_proc_stat(pid: u32, boot_time: u64, clock_ticks: u64) -> (Option<System
 }
 
 fn count_children(pid: u32) -> u32 {
-    let children = fs::read_to_string(format!("/proc/{}/task/{}/children", pid, pid))
-        .unwrap_or_default();
+    let children =
+        fs::read_to_string(format!("/proc/{}/task/{}/children", pid, pid)).unwrap_or_default();
     children.split_whitespace().count() as u32
 }
 
@@ -281,7 +294,11 @@ pub fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
 
         infos.push(PortInfo {
             port: sock.local_port,
-            protocol: sock.protocol.strip_suffix('6').unwrap_or(&sock.protocol).to_string(),
+            protocol: sock
+                .protocol
+                .strip_suffix('6')
+                .unwrap_or(&sock.protocol)
+                .to_string(),
             pid,
             process_name: get_process_name(pid),
             command: get_process_cmdline(pid),

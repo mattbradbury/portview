@@ -19,7 +19,8 @@ const MAXPATHLEN: u32 = 1024;
 // ── FFI declarations ─────────────────────────────────────────────────
 
 extern "C" {
-    fn proc_listpids(r#type: u32, typeinfo: u32, buffer: *mut libc::c_void, buffersize: i32) -> i32;
+    fn proc_listpids(r#type: u32, typeinfo: u32, buffer: *mut libc::c_void, buffersize: i32)
+        -> i32;
     fn proc_pidinfo(
         pid: i32,
         flavor: i32,
@@ -274,15 +275,7 @@ fn list_all_pids() -> Vec<i32> {
 }
 
 fn list_fds(pid: i32) -> Vec<ProcFdInfo> {
-    let size = unsafe {
-        proc_pidinfo(
-            pid,
-            PROC_PIDLISTFDS,
-            0,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let size = unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
     if size <= 0 {
         return vec![];
     }
@@ -343,13 +336,7 @@ fn get_task_all_info(pid: i32) -> Option<ProcTaskAllInfo> {
 
 fn get_pid_path(pid: i32) -> String {
     let mut buf = [0u8; MAXPATHLEN as usize];
-    let ret = unsafe {
-        proc_pidpath(
-            pid,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            MAXPATHLEN,
-        )
-    };
+    let ret = unsafe { proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_void, MAXPATHLEN) };
     if ret > 0 {
         String::from_utf8_lossy(&buf[..ret as usize]).to_string()
     } else {
@@ -439,9 +426,8 @@ pub fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
                 ("TCP".to_string(), state, port, addr)
             } else if si.soi_kind == SOCKINFO_IN {
                 // UDP socket
-                let in_info: InSockInfo = unsafe {
-                    std::ptr::read_unaligned(si.soi_proto.as_ptr() as *const InSockInfo)
-                };
+                let in_info: InSockInfo =
+                    unsafe { std::ptr::read_unaligned(si.soi_proto.as_ptr() as *const InSockInfo) };
                 let port = u16::from_be(in_info.insi_lport as u16);
                 let addr = extract_addr(&in_info.insi_laddr, in_info.insi_vflag);
                 // UDP doesn't have LISTEN — treat bound sockets as listening
@@ -460,7 +446,12 @@ pub fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
                 }
             }
 
-            hits.push(SocketHit { protocol, state, local_port, local_addr });
+            hits.push(SocketHit {
+                protocol,
+                state,
+                local_port,
+                local_addr,
+            });
         }
 
         if hits.is_empty() {
