@@ -540,8 +540,10 @@ fn render_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 Cell::from(info.pid.to_string()).style(app.styles.pid),
                 Cell::from(info.user.clone()).style(app.styles.user),
                 Cell::from(info.process_name.clone()).style(app.styles.process),
-                Cell::from(format_uptime(info.start_time)).style(app.styles.uptime),
-                Cell::from(format_bytes(info.memory_bytes)).style(app.styles.mem),
+                Cell::from(Line::from(format_uptime(info.start_time)).alignment(Alignment::Right))
+                    .style(app.styles.uptime),
+                Cell::from(Line::from(format_bytes(info.memory_bytes)).alignment(Alignment::Right))
+                    .style(app.styles.mem),
                 Cell::from(cmd).style(app.styles.command),
             ])
         })
