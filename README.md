@@ -1,10 +1,13 @@
 # portview
 
+[![CI](https://github.com/mapika/portview/actions/workflows/ci.yml/badge.svg)](https://github.com/mapika/portview/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/portview)](https://crates.io/crates/portview)
+
 See what's on your ports, then act on it.
 
 A diagnostic-first port viewer for Linux, macOS, and Windows. No more `lsof -i :3000 | grep LISTEN` incantations. One command shows you what's listening, who owns it, how long it's been running, and offers to kill it if you want.
 
-~930 KB single binary. Zero runtime dependencies.
+~860 KB single binary. Zero runtime dependencies.
 
 <p align="center">
   <img src="demo.gif" alt="portview --watch demo" width="100%" loop=infinite>
