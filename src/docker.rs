@@ -107,10 +107,7 @@ pub(crate) fn run_docker_action(action: &str, container_name: &str) -> String {
     };
 
     if output.status.success() {
-        format!(
-            "docker {} {}: OK",
-            action, container_name
-        )
+        format!("docker {} {}: OK", action, container_name)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         format!(

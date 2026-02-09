@@ -16,7 +16,9 @@ use ratatui::widgets::{
 };
 use ratatui::Terminal;
 
-use crate::docker::{get_docker_port_map, run_docker_action, run_docker_logs, DockerPortMap, DockerPortOwner};
+use crate::docker::{
+    get_docker_port_map, run_docker_action, run_docker_logs, DockerPortMap, DockerPortOwner,
+};
 #[cfg(target_os = "linux")]
 use crate::linux::get_port_infos;
 #[cfg(target_os = "macos")]
@@ -1484,5 +1486,4 @@ mod tests {
         assert_eq!(SortColumn::from_index(7), Some(SortColumn::Command));
         assert_eq!(SortColumn::from_index(8), None);
     }
-
 }
