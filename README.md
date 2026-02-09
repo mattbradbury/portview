@@ -7,7 +7,7 @@ See what's on your ports, then act on it.
 
 A diagnostic-first port viewer for Linux, macOS, and Windows. No more `lsof -i :3000 | grep LISTEN` incantations. One command shows you what's listening, who owns it, how long it's been running, and offers to kill it if you want.
 
-~860 KB single binary. Zero runtime dependencies.
+~960 KB single binary. Zero runtime dependencies.
 
 <p align="center">
   <img src="demo.gif" alt="portview --watch demo" width="100%" loop=infinite>
@@ -160,9 +160,9 @@ Available columns: `port`, `proto`, `pid`, `user`, `process`, `uptime`, `mem`, `
 
 Available colors: `red`, `green`, `blue`, `cyan`, `yellow`, `magenta`, `white`, `bold`, `dimmed`, `bright_red`, `bright_green`, `bright_blue`, `bright_cyan`, `bright_yellow`, `bright_magenta`, `bright_white`, `none`
 
-Defaults: `port=cyan, proto=dimmed, pid=yellow, user=green, process=bold, uptime=dimmed, mem=dimmed, command=white`
+One-shot defaults: `port=cyan, proto=dimmed, pid=yellow, user=green, process=bold, uptime=dimmed, mem=dimmed, command=white`
 
-Use `--no-color` to disable all colors.
+Watch mode uses a soft RGB color palette by default. Set `PORTVIEW_COLORS` to override, or `--no-color` to disable all colors.
 
 ## What it shows
 
@@ -205,8 +205,8 @@ cp target/release/portview /usr/local/bin/
 
 ## Limitations
 
-- **Linux:** Needs read access to `/proc/<pid>/fd/` for inode→pid mapping. Some processes owned by other users may require `sudo`.
-- **macOS:** Some processes owned by other users may not be visible without `sudo`.
+- **Linux:** Needs read access to `/proc/<pid>/fd/` for inode→pid mapping. Processes owned by other users are hidden without `sudo`.
+- **macOS:** Processes owned by other users may not be visible without `sudo`.
 - **Windows:** Some system/protected processes may not be accessible. `--kill` always force-terminates (no graceful SIGTERM equivalent). Run as Administrator to see all processes.
 
 ## License
