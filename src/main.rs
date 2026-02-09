@@ -815,7 +815,10 @@ fn main() {
         // Register signal/ctrl handler for clean exit
         #[cfg(unix)]
         unsafe {
-            libc::signal(libc::SIGINT, handle_sigint as *const () as libc::sighandler_t);
+            libc::signal(
+                libc::SIGINT,
+                handle_sigint as *const () as libc::sighandler_t,
+            );
         }
         #[cfg(windows)]
         unsafe {
