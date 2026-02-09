@@ -312,6 +312,9 @@ pub fn get_port_infos(filter_listening: bool) -> Vec<PortInfo> {
         });
     }
 
+    // Drop entries where we couldn't read process details (other user's process without sudo)
+    infos.retain(|i| !i.process_name.is_empty());
+
     // Sort by port number, then protocol, then pid (pid needed for dedup_by adjacency)
     infos.sort_by(|a, b| {
         a.port
