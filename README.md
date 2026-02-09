@@ -96,16 +96,45 @@ portview -k 3000 --force  # SIGKILL (Unix) / TerminateProcess (Windows)
 
 > **Note:** On Windows, `--kill` always force-terminates the process via `TerminateProcess`. There is no graceful shutdown equivalent to Unix SIGTERM.
 
-### Watch mode (live refresh)
+### Watch mode (interactive TUI)
 
 ```bash
-portview --watch            # refresh all ports every 1s
+portview --watch            # interactive TUI, refreshes every 1s
 portview -w 3000            # watch a specific port
 portview -w node            # watch filtered by process name
 portview -w --json          # streaming JSON, useful for piping
 ```
 
-The display refreshes every second. Ctrl+C exits cleanly.
+Watch mode opens an interactive TUI with a scrollable table, row selection, filtering, and kill confirmation.
+
+#### Keybindings
+
+**Table view:**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next row |
+| `k` / `↑` | Select previous row |
+| `g` / `Home` | Jump to first row |
+| `G` / `End` | Jump to last row |
+| `Enter` | Inspect selected port (detail view) |
+| `d` | Kill process (SIGTERM, with confirmation) |
+| `D` | Force kill (SIGKILL, with confirmation) |
+| `/` | Enter filter mode |
+| `<` / `>` | Cycle sort column left / right |
+| `r` | Reverse sort direction |
+| `1`-`8` | Jump to column N (same column toggles direction) |
+| `a` | Toggle all/listening-only ports |
+| `q` / `Esc` | Quit |
+| `Ctrl+C` | Quit |
+
+**Detail view:** `Esc` to go back, `d`/`D` to kill, `q` to quit.
+
+**Filter mode:** Type to filter across all columns, `Enter` to apply, `Esc` to cancel and clear.
+
+**Kill popup:** `y`/`Enter` to confirm, `n`/`Esc` to cancel.
+
+Use `--watch --json` for non-interactive streaming JSON output (no TUI).
 
 ### JSON output
 
