@@ -865,7 +865,7 @@ fn handle_popup_key(app: &mut App, code: KeyCode) {
             if let Some(popup) = app.popup.take() {
                 app.status_message = Some((
                     match kill_process(popup.pid, popup.force) {
-                        Ok(action) if action == "TerminateProcess" => {
+                        Ok("TerminateProcess") => {
                             format!("Terminated PID {}", popup.pid)
                         }
                         Ok(action) => format!("Sent {} to PID {}", action, popup.pid),
